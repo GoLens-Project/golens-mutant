@@ -39,15 +39,22 @@ mutant --config config.yaml
 ```
 
 The run prints a progress bar on stderr, a per-file log line — timestamp,
-in-package progress, file path, started/finished —
+state, in-package progress, package and file path —
 
 ```
-2026-09-10T14:32:01+02:00 libs/core 3/12 lib/api/client.dart started
-2026-09-10T14:32:04+02:00 libs/core 3/12 lib/api/client.dart finished
+[2026-09-10T14:32:01+02:00] started 3/12 libs/core - lib/api/client.dart
+[2026-09-10T14:32:04+02:00] finished 3/12 libs/core - lib/api/client.dart
 ```
 
-notices for resource events (worker scale-down, package aborts), and a
-human-readable summary at the end:
+With `reports.show_logs: true`, live command output is interleaved using
+the same pattern, tagged with the file it belongs to:
+
+```
+[2026-09-10T14:32:02+02:00] started 3/12 libs/core - lib/api/client.dart 00:03 +1: All tests passed!
+```
+
+Notices for resource events (worker scale-down, package aborts) and a
+human-readable summary close out the run:
 
 ```
 Mutation run finished in 4m12s
@@ -134,7 +141,9 @@ read-only — never created or migrated.
    prepared copy.
 5. **Reports** — every completed file is persisted immediately
    (JSON files, or SQLite) with raw command logs kept verbatim, so an
-   interrupted run resumes with at most one file lost.
+   interrupted run resumes with at most one file lost. Set
+   `reports.show_logs: true` to also stream each command's output live
+   to the terminal while it runs, prefixed with its package and file.
 
 ## Command templates
 

@@ -185,6 +185,11 @@ type ReportsConfig struct {
 	// SQLitePath overrides the default SQLite location
 	// (~/.config/golens-mutant/mutant.db).
 	SQLitePath string `yaml:"sqlite_path"`
+
+	// ShowLogs live-streams each command's combined stdout/stderr to the
+	// terminal while it runs (prefixed per file), in addition to the
+	// buffered per-file logs under Dir/logs. Default: false.
+	ShowLogs bool `yaml:"show_logs"`
 }
 
 // ResultsConfig maps raw command outcomes to mutation-result classes.
@@ -462,6 +467,10 @@ func (c *Config) ScaleDownEnabled() bool { return *c.Resources.ScaleDown }
 
 // ResumeEnabled reports whether resume state is persisted (D8).
 func (c *Config) ResumeEnabled() bool { return *c.Resume.Enabled }
+
+// ShowLogs reports whether command output is streamed live to the
+// terminal while it runs (D9).
+func (c *Config) ShowLogs() bool { return c.Reports.ShowLogs }
 
 // SQLitePath returns the configured or default SQLite database path (D9).
 func (c *Config) SQLitePath() string {

@@ -1,8 +1,11 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -192,6 +195,124 @@ func TestFileLogEvents(t *testing.T) {
 		if e.Time.IsZero() {
 			t.Errorf("events[%d].Time is zero", i)
 		}
+	}
+}
+
+// captureSink collects one file's streamed output for assertions; it
+// records the scheduler's flush/close calls to verify the lifecycle
+// contract.
+type captureSink struct {
+	mu     sync.Mutex
+	buf    bytes.Buffer
+	events []string // "flush" / "close" in call order
+}
+
+func (c *captureSink) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+
+func (c *captureSink) Flush() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, "flush")
+}
+
+func (c *captureSink) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, "close")
+}
+
+func (c *captureSink) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
+}
+
+func (c *captureSink) lifecycle() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.events...)
+}
+
+// errSink fails every write, standing in for a broken embedder sink.
+type errSink struct{}
+
+func (errSink) Write(p []byte) (int, error) { return 0, errors.New("sink failure") }
+
+func TestStreamsCommandOutput(t *testing.T) {
+	h := buildFixture(t, []string{"pa"}, 2, "")
+	h.cfg.Mutation.Commands = []string{"echo one {file}; echo two >&2; printf partial"}
+	var mu sync.Mutex
+	sinks := map[string]*captureSink{}
+	var started []FileEvent
+	s := h.run(t, Options{Stream: func(e FileEvent) io.Writer {
+		mu.Lock()
+		defer mu.Unlock()
+		started = append(started, e)
+		c := &captureSink{}
+		sinks[e.File] = c
+		return c
+	}})
+	if s.Done() != 2 {
+		t.Fatalf("done = %d, want 2", s.Done())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(started) != 2 {
+		t.Fatalf("stream hook called %d times, want one per file", len(started))
+	}
+	for _, e := range started {
+		if e.Package != h.pkg("pa") || e.Total != 2 || e.Finished {
+			t.Errorf("stream event = %+v, want a started event for %s 2-file package", e, h.pkg("pa"))
+		}
+	}
+	for file, c := range sinks {
+		want := "one " + file + "\ntwo\npartial"
+		if got := c.String(); got != want {
+			t.Errorf("%s: streamed %q, want %q", file, got, want)
+		}
+		// Lifecycle: at least one flush (trailing partial line emitted),
+		// close last.
+		events := c.lifecycle()
+		if len(events) == 0 || events[len(events)-1] != "close" {
+			t.Errorf("%s: lifecycle = %v, want it to end with close", file, events)
+		}
+		flushed := false
+		for _, e := range events {
+			flushed = flushed || e == "flush"
+		}
+		if !flushed {
+			t.Errorf("%s: sink never flushed (trailing partial line lost)", file)
+		}
+		// Tee invariant: the buffered on-disk log is byte-identical to
+		// what the stream saw.
+		logPath := filepath.Join(h.cfg.Reports.Dir, "logs",
+			strings.ReplaceAll(strings.Trim(h.pkg("pa"), "/"), "/", "__"),
+			strings.ReplaceAll(file, "/", "__")+".log")
+		onDisk, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Fatalf("%s: read log: %v", file, err)
+		}
+		if string(onDisk) != c.String() {
+			t.Errorf("%s: on-disk log %q != streamed %q", file, onDisk, c.String())
+		}
+	}
+}
+
+func TestStreamSinkErrorsDoNotAffectResults(t *testing.T) {
+	h := buildFixture(t, []string{"pa"}, 1, "")
+	h.cfg.Mutation.Commands = []string{"echo boom"} // exits 0 → survived
+	h.run(t, Options{Stream: func(e FileEvent) io.Writer { return errSink{} }})
+	state, err := h.store.Resume()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state[h.pkg("pa")]["lib/a.dart"]; got != "survived" {
+		t.Errorf("result = %q, want survived — sink errors must not reach cmd.Wait", got)
 	}
 }
 

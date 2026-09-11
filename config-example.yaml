@@ -122,6 +122,12 @@ reports:
   # ~/.config/golens-mutant/mutant.db).
   # sqlite_path: /tmp/mutant.db
 
+  # Stream every command's combined stdout/stderr live to the terminal
+  # while tests run, prefixed per file, in addition to the buffered
+  # per-file logs under <dir>/logs. Output may lag for commands that
+  # buffer their own stdout when it is not a terminal.
+  show_logs: false
+
 # Result classification: how raw command outcomes map to mutation result
 # classes (killed / survived / build_error / timeout / oom / error).
 # Output rules run first; then exit codes; unlisted codes default to

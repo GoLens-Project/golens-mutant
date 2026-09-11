@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -138,11 +139,20 @@ func run() error {
 		return fmt.Errorf("all %d package(s) exempted by --exempt — nothing to run", len(pkgs))
 	}
 
-	sched, err := scheduler.New(cfg, mon, ws, store, runnable, scheduler.Options{
-		Notify:   func(msg string) { fmt.Fprintf(os.Stderr, "\r\033[K· %s\n", msg) },
-		Progress: renderBar(os.Stderr),
-		FileLog:  logFileEvent(os.Stderr),
-	})
+	// All terminal output shares one locked writer so live-streamed
+	// command output never interleaves with notices or the progress bar.
+	lw := &lockedWriter{w: os.Stderr}
+	opts := scheduler.Options{
+		Notify:   func(msg string) { fmt.Fprintf(lw, "\r\033[K· %s\n", msg) },
+		Progress: renderBar(lw),
+		FileLog:  logFileEvent(lw),
+	}
+	if cfg.ShowLogs() {
+		opts.Stream = func(e scheduler.FileEvent) io.Writer {
+			return newStreamSink(lw, e)
+		}
+	}
+	sched, err := scheduler.New(cfg, mon, ws, store, runnable, opts)
 	if err != nil {
 		return err
 	}
@@ -166,20 +176,20 @@ func run() error {
 // logFileEvent returns the per-file log callback: one line per started/
 // finished file — timestamp, in-package progress, file path, state —
 // printed above the progress bar.
-func logFileEvent(w *os.File) func(scheduler.FileEvent) {
+func logFileEvent(w io.Writer) func(scheduler.FileEvent) {
 	return func(e scheduler.FileEvent) {
 		state := "started"
 		if e.Finished {
 			state = "finished"
 		}
-		fmt.Fprintf(w, "\r\033[K%s %s %d/%d %s %s\n",
-			e.Time.Format(time.RFC3339), e.Package, e.Done, e.Total, e.File, state)
+		fmt.Fprintf(w, "\r\033[K%s\n",
+			filePrefix(e.Time, state, e.Done, e.Total, e.Package, e.File))
 	}
 }
 
 // renderBar returns a progress callback drawing a simple ANSI bar with
 // done/total counts (D12).
-func renderBar(w *os.File) func(done, total int) {
+func renderBar(w io.Writer) func(done, total int) {
 	return func(done, total int) {
 		const width = 30
 		filled := 0
