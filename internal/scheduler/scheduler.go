@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"sync"
@@ -35,6 +36,21 @@ type Options struct {
 	// FileLog, when set, receives a started event when a file's command
 	// chain begins and a finished event when its result is recorded.
 	FileLog func(e FileEvent)
+
+	// Stream, when set, is called once per file with its started event
+	// (package, file, in-package progress) before the command chain runs;
+	// the returned writer receives a live copy of every command's combined
+	// stdout/stderr for that file, alongside the buffered copy used for
+	// classification and the per-file log. The scheduler isolates the
+	// sink from results: write errors and short writes are swallowed.
+	// Flush (Flush() or Flush() error) is called after each command
+	// completes — trailing partial lines surface before the next command
+	// starts — and Close (Close() or Close() error) once the chain
+	// finishes. Writes arrive from concurrent worker goroutines;
+	// implementations must be safe for concurrent use, and a blocking
+	// sink stalls the child against its per-command deadline, so writes
+	// should be fast or asynchronous.
+	Stream func(e FileEvent) io.Writer
 }
 
 // FileEvent is one per-file execution log line.
@@ -283,15 +299,17 @@ func (s *Scheduler) cacheReadyForMoreWorkers() bool {
 }
 
 // fileStarted emits the per-file started log event for a claimed file
-// (x = files resolved so far + this one).
-func (s *Scheduler) fileStarted(st *pkgState, file string) {
-	if s.opt.FileLog == nil {
-		return
-	}
+// (x = files resolved so far + this one) and returns it for the stream
+// hook.
+func (s *Scheduler) fileStarted(st *pkgState, file string) FileEvent {
+	e := FileEvent{Time: time.Now(), Package: st.pkg.Name, File: file}
 	s.mu.Lock()
-	x, y := st.done+1, st.total
+	e.Done, e.Total = st.done+1, st.total
 	s.mu.Unlock()
-	s.opt.FileLog(FileEvent{Time: time.Now(), Package: st.pkg.Name, File: file, Done: x, Total: y})
+	if s.opt.FileLog != nil {
+		s.opt.FileLog(e)
+	}
+	return e
 }
 
 // fileFinished counts the file toward its package and emits the finished
@@ -459,7 +477,7 @@ func (s *Scheduler) nextWork(ctx context.Context) (*pkgState, *workspace.Sandbox
 // and records the outcome (D14 abort-package included).
 func (s *Scheduler) runFile(ctx context.Context, st *pkgState, sbx *workspace.Sandbox, file discover.File) {
 	start := time.Now()
-	s.fileStarted(st, file.Rel)
+	startEvent := s.fileStarted(st, file.Rel)
 	if err := sbx.RestorePristine(file.Rel); err != nil {
 		s.record(report.FileResult{
 			Package: st.pkg.Name, File: file.Rel, Result: config.ResultError,
@@ -477,7 +495,11 @@ func (s *Scheduler) runFile(ctx context.Context, st *pkgState, sbx *workspace.Sa
 		TargetDir: sbx.Dir,
 		Package:   st.pkg.Name,
 	}
-	exit, output, timedOut, oom, runErr := s.runCommands(ctx, sbx, vars)
+	var stream io.Writer
+	if s.opt.Stream != nil {
+		stream = s.opt.Stream(startEvent)
+	}
+	exit, output, timedOut, oom, runErr := s.runCommands(ctx, sbx, vars, stream)
 
 	// An interrupted run (Ctrl-C) must not persist a fabricated result:
 	// the file stays unrecorded and re-runs on resume (D21, F2).
@@ -514,8 +536,11 @@ func (s *Scheduler) runFile(ctx context.Context, st *pkgState, sbx *workspace.Sa
 // sandbox, stopping at the first failure. It enforces the per-command
 // timeout (D14) and the per-process memory budget, killing the command's
 // whole process group so timeouts never orphan the toolchain (F5).
-func (s *Scheduler) runCommands(ctx context.Context, sbx *workspace.Sandbox, vars config.Vars) (exit int, output string, timedOut, oom bool, err error) {
+func (s *Scheduler) runCommands(ctx context.Context, sbx *workspace.Sandbox, vars config.Vars, stream io.Writer) (exit int, output string, timedOut, oom bool, err error) {
 	var buf bytes.Buffer
+	// Release the live-output sink on every return path; each command's
+	// Flush has already run by then.
+	defer closeStream(stream)
 	for _, tmpl := range s.cfg.Mutation.Commands {
 		if ctx.Err() != nil {
 			return exit, buf.String(), false, false, ctx.Err()
@@ -534,8 +559,16 @@ func (s *Scheduler) runCommands(ctx context.Context, sbx *workspace.Sandbox, var
 		setNewPGroup(cmd)
 		cmd.Dir = sbx.Dir
 		var out bytes.Buffer
-		cmd.Stdout = &out
-		cmd.Stderr = &out
+		var sink io.Writer = &out
+		if stream != nil {
+			// Tee: the captured bytes stay identical whether or not a
+			// live sink is attached (classification depends on them).
+			// The guard keeps a fallible or short-writing sink from
+			// surfacing through cmd.Wait as a result error.
+			sink = io.MultiWriter(&out, streamGuard{stream})
+		}
+		cmd.Stdout = sink
+		cmd.Stderr = sink
 
 		if serr := cmd.Start(); serr != nil {
 			if cancel != nil {
@@ -563,6 +596,7 @@ func (s *Scheduler) runCommands(ctx context.Context, sbx *workspace.Sandbox, var
 		waitErr := cmd.Wait()
 		close(finished)
 		close(stopRSS)
+		flushStream(stream) // the copy goroutines are done; emit any partial line
 		buf.Write(out.Bytes())
 		if cancel != nil {
 			cancel()
@@ -589,6 +623,38 @@ func (s *Scheduler) runCommands(ctx context.Context, sbx *workspace.Sandbox, var
 		}
 	}
 	return exit, buf.String(), false, false, nil
+}
+
+// streamGuard isolates a live-output sink from the result path: write
+// errors and short writes never surface through io.MultiWriter into
+// cmd.Wait, where they would misclassify the file as an error.
+type streamGuard struct{ w io.Writer }
+
+func (g streamGuard) Write(p []byte) (int, error) {
+	_, _ = g.w.Write(p)
+	return len(p), nil
+}
+
+// flushStream flushes a live-output sink after a command completes,
+// supporting both Flush() and Flush() error shapes (bufio.Writer style).
+func flushStream(w io.Writer) {
+	switch f := w.(type) {
+	case interface{ Flush() }:
+		f.Flush()
+	case interface{ Flush() error }:
+		_ = f.Flush()
+	}
+}
+
+// closeStream releases a live-output sink once the file's command chain
+// has finished, supporting both Close() and Close() error shapes.
+func closeStream(w io.Writer) {
+	switch f := w.(type) {
+	case interface{ Close() }:
+		f.Close()
+	case interface{ Close() error }:
+		_ = f.Close()
+	}
 }
 
 // watchRSS kills cmd's process group when its tree's resident memory

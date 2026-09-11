@@ -5,6 +5,8 @@ backlog/
 dist/
 coverage.txt
 
+.ai-jail
+
 # local Go caches (sandboxed-shell build workaround)
 .gocache/
 .gopath/

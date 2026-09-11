@@ -63,6 +63,9 @@ func TestLoadMinimal(t *testing.T) {
 	if c.Reports.Storage != "json" || c.Reports.Dir != "reports" {
 		t.Errorf("reports defaults = %q/%q", c.Reports.Storage, c.Reports.Dir)
 	}
+	if c.ShowLogs() {
+		t.Error("show_logs default = true, want false")
+	}
 }
 
 func TestLoadExampleIsValid(t *testing.T) {
@@ -225,6 +228,13 @@ reports:
 	}
 	if got := c2.SQLitePath(); got != "/tmp/x.db" {
 		t.Errorf("SQLitePath = %q", got)
+	}
+	c3, err := Load(writeConfig(t, minimalConfig+"\nreports:\n  show_logs: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c3.ShowLogs() {
+		t.Error("ShowLogs = false, want true")
 	}
 }
 
