@@ -1,0 +1,134 @@
+name: release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  release:
+    name: tag, build, publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history: versioning reads commits since the last tag
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      # Branch-label semver (D17): the bump comes from the branch name of
+      # every PR merged since the last tag — major/ → major, minor/ →
+      # minor, patch/ → patch (highest wins). PR branch names are resolved
+      # through the commit→PR API, so merge and squash strategies both
+      # work. Direct pushes (no PR) fall back to conventional commit
+      # subjects. `go install …@<tag>` works from the tag alone; the
+      # binaries attached to the release are a convenience.
+      - name: Compute next version
+        id: semver
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Highest version among ALL tags, not `git describe` — describe
+          # only sees tags reachable from HEAD, so a tag anchored to
+          # off-branch history would silently reset versioning to v0.1.0.
+          LAST=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)
+          if [ -n "$LAST" ]; then
+            SHAS=$(git rev-list "$LAST..HEAD")
+          else
+            SHAS=$(git rev-list HEAD)
+          fi
+
+          # Collect the branch names of PRs associated with each commit.
+          BRANCHES=""
+          for sha in $SHAS; do
+            refs=$(gh api "repos/$REPO/commits/$sha/pulls" \
+              --jq '.[].head.ref' 2>/dev/null || true)
+            BRANCHES="$BRANCHES
+          $refs"
+          done
+
+          BUMP=""
+          if echo "$BRANCHES" | grep -qE '^major/'; then
+            BUMP=major
+          elif echo "$BRANCHES" | grep -qE '^minor/'; then
+            BUMP=minor
+          elif echo "$BRANCHES" | grep -qE '^patch/'; then
+            BUMP=patch
+          fi
+
+          if [ -z "$BUMP" ]; then
+            # No labeled PRs (direct pushes): conventional commit subjects.
+            if [ -n "$LAST" ]; then LOG=$(git log "$LAST..HEAD" --format='%s%n%b');
+            else LOG=$(git log --format='%s%n%b'); fi
+            if echo "$LOG" | grep -qE '^feat(\([^)]*\))?!:|^BREAKING CHANGE:'; then
+              BUMP=major
+            elif echo "$LOG" | grep -qE '^feat(\([^)]*\))?:'; then
+              BUMP=minor
+            else
+              BUMP=patch
+            fi
+          fi
+
+          # An untagged repository always starts at v0.1.0: a major
+          # label is meaningless before a public API exists.
+          if [ -z "$LAST" ]; then
+            MAJOR=0; MINOR=1; PATCH=0
+          else
+            V=${LAST#v}
+            IFS=. read -r MAJOR MINOR PATCH <<< "$V"
+            case "$BUMP" in
+              major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR+1)); PATCH=0 ;;
+              patch) PATCH=$((PATCH+1)) ;;
+            esac
+          fi
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+          echo "version=v$MAJOR.$MINOR.$PATCH" >> "$GITHUB_OUTPUT"
+
+      - name: Verify
+        run: |
+          go build -o /dev/null ./...
+          go vet ./...
+          go test ./...
+
+      - name: Build release artifacts
+        env:
+          VERSION: ${{ steps.semver.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            GOOS=${target%/*}
+            GOARCH=${target#*/}
+            name="mutant-$GOOS-$GOARCH"
+            [ "$GOOS" = windows ] && name="$name.exe"
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build -trimpath \
+              -ldflags "-X main.version=${VERSION#v}" \
+              -o "dist/$name" ./cmd/mutant
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+            rm "dist/$name"
+          done
+          ls dist/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.semver.outputs.version }}
+          generate_release_notes: true
+          body: |
+            Version bump: ${{ steps.semver.outputs.bump }} → ${{ steps.semver.outputs.version }}
+
+            Install with:
+            ```
+            go install github.com/GoLens-Project/golens-mutant/cmd/mutant@${{ steps.semver.outputs.version }}
+            ```
+          files: dist/*.tar.gz

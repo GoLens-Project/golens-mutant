@@ -1,0 +1,171 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  branch-name:
+    name: branch name (semver label)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require patch/ minor/ or major/ prefix
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -eu
+          echo "Checking branch: $HEAD_REF"
+          case "$HEAD_REF" in
+            patch/*|minor/*|major/*)
+              case "$HEAD_REF" in
+                patch/*) echo "patch (patch/)" ;;
+                minor/*) echo "minor (minor/)" ;;
+                major/*) echo "major (major/)" ;;
+              esac
+              ;;
+            *)
+              echo "::error::branch '$HEAD_REF' must be prefixed with a semver label: patch/ (patch), minor/ (minor), or major/ (breaking). The release workflow reads the version bump from this prefix."
+              exit 1
+              ;;
+          esac
+
+  test:
+    name: build & test (go ${{ matrix.go }})
+    needs: branch-name
+    if: always() && needs.branch-name.result != 'failure' && needs.branch-name.result != 'cancelled'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        go: [oldstable, stable]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l cmd internal)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:" $unformatted
+            exit 1
+          fi
+
+      - name: Build
+        run: go build -o /dev/null ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -coverprofile=coverage.txt -covermode=atomic ./...
+
+  coverage-badge:
+    name: publish coverage badge
+    needs: branch-name
+    if: always() && needs.branch-name.result != 'failure' && needs.branch-name.result != 'cancelled' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      # Job-scoped: only this job pushes (the coverage SVG) to the
+      # dedicated "coverage" branch.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Test with coverage
+        run: go test -coverprofile=coverage.txt -covermode=atomic ./...
+
+      - name: Render badge SVG
+        run: |
+          set -eu
+          pct=$(go tool cover -func=coverage.txt | awk '/^total:/ {sub(/%$/, "", $3); print $3}')
+          color=$(awk -v p="$pct" 'BEGIN {
+            if (p+0 >= 80)      print "#4c1"     # green
+            else if (p+0 >= 60) print "#dfb317"  # yellow
+            else                print "#e05d44"  # red
+          }')
+          left="coverage"; right="${pct}%"
+          lw=$(( ${#left} * 6 + 14 )); rw=$(( ${#right} * 6 + 14 )); w=$(( lw + rw ))
+          {
+            echo "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"$w\" height=\"20\" role=\"img\" aria-label=\"$left: $right\">"
+            echo "  <title>$left: $right</title>"
+            echo "  <defs><clipPath id=\"r\"><rect width=\"$w\" height=\"20\" rx=\"3\"/></clipPath></defs>"
+            echo "  <g clip-path=\"url(#r)\">"
+            echo "    <rect width=\"$lw\" height=\"20\" fill=\"#555\"/>"
+            echo "    <rect x=\"$lw\" width=\"$rw\" height=\"20\" fill=\"$color\"/>"
+            echo "  </g>"
+            echo "  <g fill=\"#fff\" font-family=\"Verdana,DejaVu Sans,Geneva,sans-serif\" font-size=\"11\" text-anchor=\"middle\">"
+            echo "    <text x=\"$(( lw / 2 ))\" y=\"14\">$left</text>"
+            echo "    <text x=\"$(( lw + rw / 2 ))\" y=\"14\">$right</text>"
+            echo "  </g>"
+            echo "</svg>"
+          } > coverage.svg
+          echo "badge: $(cat coverage.svg | tr -d '\n' | head -c 200)"
+
+      - name: Publish to the coverage branch
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Orphan branch holding only the badge; force-push makes every
+          # master run deterministic (no merge noise, no history growth).
+          # --force: the test step leaves regenerated coverage.txt in the
+          # worktree, which would otherwise abort the branch switch.
+          git switch --force --orphan coverage
+          git add coverage.svg
+          git commit -m "coverage: update badge"
+          git push --force origin coverage
+
+  smoke:
+    name: cli smoke test
+    needs: branch-name
+    if: always() && needs.branch-name.result != 'failure' && needs.branch-name.result != 'cancelled'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Generate example config
+        run: |
+          go run ./cmd/mutant --generate-config-example config-example.yaml
+          go run ./cmd/mutant --config config-example.yaml --version
+
+      - name: Run orchestrator on toy workspace
+        run: |
+          mkdir -p libs/demo/lib
+          echo "name: demo" > libs/demo/pubspec.yaml
+          echo "int a() => 1;" > libs/demo/lib/a.dart
+          cat > smoke-config.yaml <<EOF
+          mutation:
+            target_roots: [libs]
+            file_patterns: ["lib/**/*.dart"]
+            tests:
+              - pattern: "lib/**"
+                tests: ["test/x_test.dart"]
+            commands:
+              - "echo mutating {package}/{file} && exit 1"
+          resources:
+            spawn_cooldown: 0s
+          workspace:
+            bootstrap: ""
+          EOF
+          go run ./cmd/mutant --config smoke-config.yaml
+          grep -q '"killed"' reports/resume-state.json
