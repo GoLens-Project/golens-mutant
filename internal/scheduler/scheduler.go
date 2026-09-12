@@ -501,9 +501,21 @@ func (s *Scheduler) runFile(ctx context.Context, st *pkgState, sbx *workspace.Sa
 	}
 	exit, output, timedOut, oom, runErr := s.runCommands(ctx, sbx, vars, stream)
 
+	// A killed step never let its engine restore the mutated file: the
+	// mutant may sit in any sandbox file, not just this step's target,
+	// and would poison every later step's sanity run. Mark the sandbox
+	// dirty so the next checkout re-syncs the whole package.
+	if timedOut || oom {
+		sbx.MarkDirty()
+		s.notifyf("%s/%s: killed mid-mutation; package sandbox will be re-synced before reuse",
+			st.pkg.Name, file.Rel)
+	}
+
 	// An interrupted run (Ctrl-C) must not persist a fabricated result:
-	// the file stays unrecorded and re-runs on resume (D21, F2).
+	// the file stays unrecorded and re-runs on resume (D21, F2). The
+	// kill leaves the sandbox potentially mutated, so mark it dirty too.
 	if ctx.Err() != nil {
+		sbx.MarkDirty()
 		return
 	}
 
@@ -576,11 +588,28 @@ func (s *Scheduler) runCommands(ctx context.Context, sbx *workspace.Sandbox, var
 			}
 			return exit, buf.String(), false, false, serr
 		}
-		// Kill the whole process group on timeout or session cancel.
+		// Kill the process group on timeout or session cancel — softly:
+		// SIGTERM first gives a cooperative engine the chance to restore
+		// the file it is mutating; whatever ignores it (or lingers past
+		// the grace period) is SIGKILLed, so the toolchain is never
+		// orphaned (F5).
 		finished := make(chan struct{})
 		go func() {
 			select {
 			case <-cmdCtx.Done():
+				// A timeout keeps the configured grace; a session cancel
+				// (Ctrl-C) escalates immediately — resume state re-runs
+				// the file and the dirty re-sync heals the sandbox, so
+				// there is nothing to wait for.
+				grace := s.cfg.KillGrace()
+				if ctx.Err() != nil {
+					grace = 0
+				}
+				termGroup(cmd)
+				select {
+				case <-finished:
+				case <-time.After(grace):
+				}
 				killGroup(cmd)
 			case <-finished:
 			}

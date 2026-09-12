@@ -365,6 +365,43 @@ func TestTimeoutAbortPackage(t *testing.T) {
 	}
 }
 
+// TestTimeoutDoesNotPoisonLaterSteps guards the killed-step leak: an
+// engine timed out mid-mutation leaves its mutant in a file other than
+// the next step's target. Without a dirty re-sync, every later step's
+// run would see the leaked mutant and misclassify.
+func TestTimeoutDoesNotPoisonLaterSteps(t *testing.T) {
+	h := buildFixture(t, []string{"pa"}, 3, "")
+	h.cfg.Mutation.Timeout.Duration = "300ms"
+	h.cfg.Mutation.Timeout.KillGrace = "100ms"
+	// The first file's "engine" leaks a mutant into lib/b.dart and then
+	// hangs past the timeout (killed mid-mutation, restore never runs).
+	// Later files' runs probe lib/b.dart: hung again (→ timeout) means
+	// the leak survived; a quick exit (→ survived) means the sandbox was
+	// re-synced. The .leaked flag makes the leak one-shot so the probe
+	// results are attributable.
+	h.cfg.Mutation.Commands = []string{
+		`if [ ! -f "{target_dir}/.leaked" ]; then echo MUTANT > "{target_dir}/lib/b.dart"; touch "{target_dir}/.leaked"; fi; ` +
+			`grep -q MUTANT "{target_dir}/lib/b.dart" && sleep 5 || true`,
+	}
+	h.run(t, Options{})
+	state, _ := h.store.Resume()
+	results := state[h.pkg("pa")]
+	if got := results["lib/a.dart"]; got != "timeout" {
+		t.Errorf("lib/a.dart = %q, want timeout (the killed step)", got)
+	}
+	// b.dart itself is restored before its own run; c.dart is the real
+	// probe: its content check must not see the leaked mutant.
+	for _, f := range []string{"lib/b.dart", "lib/c.dart"} {
+		if got := results[f]; got != "survived" {
+			t.Errorf("%s = %q, want survived — leaked mutant poisoned a later step", f, got)
+		}
+	}
+	// And the sandbox itself must be clean again.
+	if b, err := os.ReadFile(filepath.Join(h.sbxDir("pa"), "lib/b.dart")); err != nil || string(b) != "src" {
+		t.Errorf("sandbox lib/b.dart = %q, %v, want pristine %q", b, err, "src")
+	}
+}
+
 func TestSandboxExclusivitySerializesPackage(t *testing.T) {
 	// The command logs start/end; concurrent sandbox use would produce
 	// two adjacent "start" lines.

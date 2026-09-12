@@ -20,12 +20,9 @@ import (
 	"github.com/GoLens-Project/golens-mutant/internal/monitor"
 	"github.com/GoLens-Project/golens-mutant/internal/report"
 	"github.com/GoLens-Project/golens-mutant/internal/scheduler"
+	"github.com/GoLens-Project/golens-mutant/internal/version"
 	"github.com/GoLens-Project/golens-mutant/internal/workspace"
 )
-
-// version is stamped at build time via
-// -ldflags "-X main.version=…" (D17).
-var version = "dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -51,7 +48,7 @@ func run() error {
 	}
 
 	if *showVersion {
-		fmt.Println("mutant", version)
+		fmt.Println("mutant", version.String())
 		return nil
 	}
 	if *genExample != "" {

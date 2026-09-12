@@ -101,6 +101,12 @@ type TimeoutConfig struct {
 	// keep going) or "abort_package" (drop the package's remaining files;
 	// resumable via D8).
 	OnTimeout string `yaml:"on_timeout"`
+
+	// KillGrace is how long a timed-out command's process group gets
+	// between SIGTERM and SIGKILL, so a cooperative engine can restore
+	// the file it was mutating. Default "10s" (Docker's stop grace);
+	// "0" escalates immediately.
+	KillGrace string `yaml:"kill_grace"`
 }
 
 // ResourcesConfig defines the dynamic resource guard thresholds (D2, D5).
@@ -300,6 +306,9 @@ func (c *Config) ApplyDefaults() {
 	if m.Timeout.OnTimeout == "" {
 		m.Timeout.OnTimeout = "continue"
 	}
+	if m.Timeout.KillGrace == "" {
+		m.Timeout.KillGrace = "10s"
+	}
 	r := &c.Resources
 	if r.CPUMetric == "" {
 		r.CPUMetric = "instant"
@@ -369,6 +378,9 @@ func (c *Config) Validate() error {
 	if _, err := ParseDuration(c.Mutation.Timeout.Duration); err != nil {
 		add("mutation.timeout.duration: %v", err)
 	}
+	if _, err := ParseDuration(c.Mutation.Timeout.KillGrace); err != nil {
+		add("mutation.timeout.kill_grace: %v", err)
+	}
 	switch c.Resources.CPUMetric {
 	case "instant", "load_avg":
 	default:
@@ -437,6 +449,13 @@ func ValidResult(class string) bool {
 // Timeout returns the parsed per-command timeout (zero disables it).
 func (c *Config) Timeout() time.Duration {
 	d, _ := ParseDuration(c.Mutation.Timeout.Duration)
+	return d
+}
+
+// KillGrace returns the parsed SIGTERM-to-SIGKILL grace period for
+// timed-out commands (zero escalates immediately).
+func (c *Config) KillGrace() time.Duration {
+	d, _ := ParseDuration(c.Mutation.Timeout.KillGrace)
 	return d
 }
 

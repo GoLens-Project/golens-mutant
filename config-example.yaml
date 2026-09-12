@@ -52,6 +52,11 @@ mutation:
     # On timeout: continue (record "timeout", keep going) or abort_package
     # (drop the package's remaining files; resumable).
     on_timeout: continue
+    # Grace period between SIGTERM and SIGKILL for a timed-out command
+    # ("0" escalates immediately): a cooperative engine can use it to
+    # restore the file it was mutating. Either way the sandbox is
+    # re-synced before reuse, so no mutant leaks into later steps.
+    kill_grace: 10s
 
 resources:
   # Gate for spawning new workers: at least this much free physical RAM
