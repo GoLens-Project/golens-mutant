@@ -14,6 +14,16 @@ func setNewPGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
+// termGroup asks the command's process group to terminate, giving a
+// cooperative engine the chance to restore the file it is mutating
+// before killGroup escalates to SIGKILL.
+func termGroup(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return nil
+	}
+	return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+}
+
 // killGroup kills the command's entire process group. With Setpgid, the
 // group ID equals the leader's PID.
 func killGroup(cmd *exec.Cmd) error {

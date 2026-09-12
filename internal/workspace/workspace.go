@@ -2,7 +2,9 @@
 // first slot to reach a package bootstraps its sandbox (source sync +
 // dependency command); later slots reuse the prepared copy under
 // exclusive access. Files are re-synced pristine from the source before
-// each mutation so no mutation ever leaks into the next run.
+// each mutation; a step killed mid-mutation (which its engine cannot
+// clean up after) additionally marks the sandbox dirty so the whole
+// package is re-synced before the next checkout.
 package workspace
 
 import (
@@ -57,6 +59,12 @@ type Sandbox struct {
 	// prepared is atomic so status can be read without contending with
 	// the checkout lock (which is held through long bootstraps).
 	prepared atomic.Bool
+
+	// dirty is set when a step was killed before its engine could
+	// restore the mutated file: the sandbox may hold leaked mutants in
+	// ANY file, not just the killed step's target. The next checkout
+	// re-syncs every source file before the sandbox is reused.
+	dirty atomic.Bool
 }
 
 // NewManager creates the sandbox manager rooted at cfg's workspace dir.
@@ -138,11 +146,20 @@ func (m *Manager) IsPrepared(pkgName string) bool {
 // Release returns a sandbox to the pool.
 func (s *Sandbox) Release() { s.mu.Unlock() }
 
+// MarkDirty flags the sandbox as possibly holding leaked mutants: a step
+// was killed (timeout, OOM, session cancel) before its engine could
+// restore the file it was mutating. Restoration before a run only covers
+// the NEXT step's own target, so a mutant leaked into any other file
+// would poison every later step's sanity run; the next checkout therefore
+// re-syncs the whole package from source instead.
+func (s *Sandbox) MarkDirty() { s.dirty.Store(true) }
+
 // prepare makes the sandbox usable: full source sync on first ever use,
-// bootstrap on first use in this session, and a re-sync when reusing a
-// sandbox persisted by a previous run.
+// bootstrap on first use in this session, a re-sync when reusing a
+// sandbox persisted by a previous run, and a re-sync when the sandbox
+// was marked dirty by a killed step.
 func (s *Sandbox) prepare(ctx context.Context) error {
-	if s.prepared.Load() {
+	if s.prepared.Load() && !s.dirty.Load() {
 		return nil
 	}
 	marker := filepath.Join(s.Dir, preparedMarker)
@@ -166,13 +183,15 @@ func (s *Sandbox) prepare(ctx context.Context) error {
 			return err
 		}
 	} else {
-		// Sandbox persisted by a previous run: re-sync sources (no
-		// re-bootstrap) so changed files are picked up and any leaked
-		// mutations overwritten.
+		// Sandbox persisted by a previous run, or marked dirty by a
+		// killed step this session: re-sync sources (no re-bootstrap)
+		// so changed files are picked up and any leaked mutations —
+		// verified by content, not assumed absent — are overwritten.
 		if err := syncTree(s.SrcDir, s.Dir, s.cfg.Workspace.SyncExcludePatterns); err != nil {
 			return fmt.Errorf("resync package %s: %w", s.Name, err)
 		}
 	}
+	s.dirty.Store(false)
 	s.prepared.Store(true)
 	return nil
 }

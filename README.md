@@ -135,10 +135,16 @@ read-only — never created or migrated.
    pristine, run the command chain, classify the outcome, then observe a
    cooldown before taking more work. Ramp-up is gradual (or calculated),
    and sustained memory pressure scales worker capacity down — with
-   recovery once resources free up.
+   recovery once resources free up. A timed-out command is asked to
+   terminate first (SIGTERM) and hard-killed after the configurable
+   `mutation.timeout.kill_grace` (10s default) — a cooperative engine
+   can use that window to restore the file it was mutating.
 4. **Sandbox cache** — the first slot to reach a package bootstraps it
    (source sync + your dependency command); later slots reuse the
-   prepared copy.
+   prepared copy. A step killed before its engine could restore the
+   mutated file marks the sandbox dirty, so the next checkout re-syncs
+   the whole package from source (verified by content, no re-bootstrap)
+   — a leaked mutant can never poison a later step's sanity run.
 5. **Reports** — every completed file is persisted immediately
    (JSON files, or SQLite) with raw command logs kept verbatim, so an
    interrupted run resumes with at most one file lost. Set
@@ -204,9 +210,12 @@ make install     # go install ./cmd/mutant into GOBIN
 ```
 
 Releases are automated and driven by **branch names**: PR branches must
-be prefixed with a semver label — `fix/…` (patch), `feat/…` (minor), or
-`major/…` (breaking). CI rejects unlabeled branches, and on merge the
-release workflow reads the labels of every merged PR (highest wins),
-tags, and publishes on every push to `master`. Direct pushes fall back
-to conventional commit subjects (`fix:`, `feat:`, `feat!:` /
-`BREAKING CHANGE`).
+be prefixed with a semver label — `patch/…`, `minor/…`, or `major/…`
+(breaking). CI rejects unlabeled branches, and on merge the release
+workflow reads the labels of every merged PR (highest wins), tags, and
+publishes on every push to `master`. Direct pushes fall back to
+conventional commit subjects (`fix:`, `feat:`, `feat!:` /
+`BREAKING CHANGE`). Each release also commits the new version into
+`internal/version/VERSION`, which the binary embeds — so `mutant
+--version` reports the true release even for `go install` builds, which
+run without ldflags stamping.

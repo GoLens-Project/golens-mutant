@@ -93,6 +93,23 @@ jobs:
           echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
           echo "version=v$MAJOR.$MINOR.$PATCH" >> "$GITHUB_OUTPUT"
 
+      # Maintain the committed version file as part of the bump: the CLI
+      # embeds it (go:embed in internal/version), so `go install
+      # …@<tag>` builds — which run no ldflags — report the true version.
+      # The tag lands on this bump commit. Pushes made with GITHUB_TOKEN
+      # do not trigger workflows, so this cannot loop.
+      - name: Record version file
+        env:
+          VERSION: ${{ steps.semver.outputs.version }}
+        run: |
+          set -euo pipefail
+          echo "${VERSION#v}" > internal/version/VERSION
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add internal/version/VERSION
+          git commit -m "release: bump version to ${VERSION#v}"
+          git push origin HEAD:master
+
       - name: Verify
         run: |
           go build -o /dev/null ./...
@@ -100,8 +117,6 @@ jobs:
           go test ./...
 
       - name: Build release artifacts
-        env:
-          VERSION: ${{ steps.semver.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -112,7 +127,6 @@ jobs:
             [ "$GOOS" = windows ] && name="$name.exe"
             CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
               go build -trimpath \
-              -ldflags "-X main.version=${VERSION#v}" \
               -o "dist/$name" ./cmd/mutant
             tar -C dist -czf "dist/$name.tar.gz" "$name"
             rm "dist/$name"

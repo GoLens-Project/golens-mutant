@@ -1,0 +1,119 @@
+# golens-mutant orchestration for the Arete UI (Makefile shortcut: mutant-ui).
+# mutant schedules per-file mutation steps in parallel sandboxes of the single
+# ui package; mutation_test stays the engine, driven by a generated step XML.
+# Run from the repo root: mutant --config ui/scripts/mutant.yaml
+# The Makefile shortcut runs the test suite first (test-ui-clean); no coverage
+# file is generated, so mutation_test runs without -c line pruning.
+
+mutation:
+  target_roots:
+    - ui
+  package_marker: pubspec.yaml
+  file_patterns:
+    - "lib/**/*.dart"
+  file_exclude_patterns:
+    - "lib/**/*.g.dart"
+    - "lib/**/*.freezed.dart"
+    - "lib/**/*.mocks.dart"
+    - "lib/l10n/**"
+    - "lib/features/affiliate/**"
+  # Ordered, first match wins. Mirrors mutation-steps.sh: a feature is mutated
+  # only when it owns a test dir; materials and pwa have none and fall through
+  # to tests_fallback: skip.
+  tests:
+    - pattern: "lib/features/activities/**"
+      tests: ["test/features/activities"]
+    - pattern: "lib/features/admin/**"
+      tests: ["test/features/admin"]
+    - pattern: "lib/features/affiliate/**"
+      tests: ["test/features/affiliate"]
+    - pattern: "lib/features/auth/**"
+      tests: ["test/features/auth"]
+    - pattern: "lib/features/billing/**"
+      tests: ["test/features/billing"]
+    - pattern: "lib/features/children/**"
+      tests: ["test/features/children"]
+    - pattern: "lib/features/family/**"
+      tests: ["test/features/family"]
+    - pattern: "lib/features/legal/**"
+      tests: ["test/features/legal"]
+    - pattern: "lib/features/onboarding/**"
+      tests: ["test/features/onboarding"]
+    - pattern: "lib/features/planning/**"
+      tests: ["test/features/planning"]
+    - pattern: "lib/features/reading/**"
+      tests: ["test/features/reading"]
+    - pattern: "lib/features/reports/**"
+      tests: ["test/features/reports"]
+    - pattern: "lib/features/settings/**"
+      tests: ["test/features/settings"]
+    - pattern: "lib/features/subjects/**"
+      tests: ["test/features/subjects"]
+    - pattern: "lib/features/support/**"
+      tests: ["test/features/support"]
+    - pattern: "lib/features/virtues/**"
+      tests: ["test/features/virtues"]
+    - pattern: "lib/app/**"
+      tests: ["test/app"]
+    - pattern: "lib/core/**"
+      tests: ["test/core"]
+    - pattern: "lib/shared/**"
+      tests: ["test/shared"]
+    - pattern: "lib/main.dart"
+      tests: ["test/widget_test.dart"]
+  tests_fallback: skip
+  all_tests: "test"
+  # Step 1 writes the one-file XML mutation_test needs; step 2 runs it.
+  # The inner flutter test timeout (1700s) stays under the outer mutant timeout.
+  commands:
+    - 'printf ''%s'' ''<?xml version="1.0" encoding="UTF-8"?><mutations version="1.2"><files><file>{abs_file}</file></files><exclude><file>lib/**.g.dart</file><file>lib/**.freezed.dart</file><file>lib/**.mocks.dart</file></exclude><commands><command group="test" expected-return="0" timeout="1700">flutter test -r failures-only -j 10 {tests}</command></commands><threshold failure="0"/></mutations>'' > "{target_dir}/step.xml"'
+    - '"$HOME/.pub-cache/bin/mutation_test" -b -f none "{target_dir}/step.xml"'
+  timeout:
+    duration: 30m
+    on_timeout: continue
+
+resources:
+  # mutation-steps.sh budgeted 1536 MiB per parallel step; keep the same floor.
+  min_free_ram_mb: 1536
+  max_cpu_percent: 90
+  cpu_metric: instant
+  max_workers: 0
+  memory_budget_per_step_mb: 0
+  spawn_cooldown: 2s
+  scale_down: true
+
+scheduling:
+  order: largest_first
+  ramp_up: gradual
+  workers_after_cache: true
+
+workspace:
+  base_dir: .work
+  cache_dir: cache
+  bootstrap: "flutter pub get"
+  sync_exclude_patterns:
+    - .git
+    - .work
+    - build
+    - .dart_tool
+    - .idea
+
+reports:
+  dir: reports
+  storage: json
+
+# A file counts as killed only when mutation_test reports zero undetected
+# mutations; the trailing space in the killed pattern avoids matching "10".
+# Unmodified-code failures (dependency resolution, compile errors) are build
+# errors, not survived mutants.
+results:
+  rules:
+    - pattern: "failed with unmodified code"
+      result: build_error
+    - pattern: "Undetected Mutations: 0 "
+      result: killed
+    - pattern: "Undetected Mutations: [1-9]"
+      result: survived
+
+resume:
+  enabled: true

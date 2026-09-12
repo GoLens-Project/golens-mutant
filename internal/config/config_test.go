@@ -51,6 +51,9 @@ func TestLoadMinimal(t *testing.T) {
 	if c.Timeout() != 5*time.Minute {
 		t.Errorf("timeout default = %v", c.Timeout())
 	}
+	if c.KillGrace() != 10*time.Second {
+		t.Errorf("kill_grace default = %v", c.KillGrace())
+	}
 	if !c.ScaleDownEnabled() {
 		t.Error("scale_down default = false, want true")
 	}
@@ -93,6 +96,7 @@ func TestValidateErrors(t *testing.T) {
 		{"bad fallback", minimalConfig + "\n  tests_fallback: sometimes\n", "tests_fallback"},
 		{"all without all_tests", minimalConfig + "\n  tests_fallback: all\n", "all_tests"},
 		{"bad cpu metric", minimalConfig + "\nresources:\n  cpu_metric: vibes\n", "cpu_metric"},
+		{"bad kill grace", minimalConfig + "\n  timeout:\n    kill_grace: soon\n", "kill_grace"},
 		{"bad ordering", minimalConfig + "\nscheduling:\n  order: random\n", "order"},
 		{"bad storage", minimalConfig + "\nreports:\n  storage: csv\n", "storage"},
 		{"bad exit key", minimalConfig + "\nresults:\n  by_exit_code:\n    x: killed\n", "by_exit_code"},

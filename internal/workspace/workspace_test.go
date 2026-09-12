@@ -179,6 +179,43 @@ func TestPersistedSandboxResyncsWithoutBootstrap(t *testing.T) {
 	}
 }
 
+// TestDirtySandboxResyncsOnNextAcquire covers the killed-step path: a
+// sandbox marked dirty (engine killed mid-mutation, mutant leaked into a
+// file that is not the next step's target) must be fully re-synced from
+// source on the next checkout — without re-bootstrapping.
+func TestDirtySandboxResyncsOnNextAcquire(t *testing.T) {
+	cfg, pkgs := fixture(t)
+	m, _ := NewManager(cfg)
+	pa := pkgByName(pkgs, "pkg_a")
+	s, ok, err := m.TryAcquire(context.Background(), pa)
+	if err != nil || !ok {
+		t.Fatalf("TryAcquire = %v, %v", s, err)
+	}
+
+	// Simulate a killed engine: the leaked mutant sits in a file other
+	// than the next step's target, at the same byte length as the source
+	// so only the content compare catches it.
+	if err := os.WriteFile(filepath.Join(s.Dir, "lib/a.dart"), []byte("MUTATED!OU"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.MarkDirty()
+	s.Release()
+
+	// Same manager, same session: the next checkout must re-sync.
+	s2, ok, err := m.TryAcquire(context.Background(), pa)
+	if err != nil || !ok {
+		t.Fatalf("re-acquire = %v, %v", s2, err)
+	}
+	defer s2.Release()
+	if b, _ := os.ReadFile(filepath.Join(s2.Dir, "lib/a.dart")); string(b) != "original a" {
+		t.Errorf("dirty re-sync left %q, want %q", b, "original a")
+	}
+	// No re-bootstrap: the sandbox survives with its artifacts.
+	if _, err := os.Stat(filepath.Join(s2.Dir, "bootstrap.txt")); err != nil {
+		t.Errorf("bootstrap artifact missing after dirty re-sync: %v", err)
+	}
+}
+
 func TestSlug(t *testing.T) {
 	if got := slug("libs/core"); got != "libs__core" {
 		t.Errorf("slug = %q", got)
