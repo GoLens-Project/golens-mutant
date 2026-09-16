@@ -96,6 +96,7 @@ Dry run — 4 package(s), 41 runnable file(s), 7 skipped
 
   settings:
     max workers: 8 (gradual ramp-up)
+    packages: sequential (one at a time)
     cooldown: 2s, scale_down_after: 30s
     timeout: 5m per command (continue)
     resume: true (1 file(s) already recorded)
@@ -130,13 +131,15 @@ read-only — never created or migrated.
    normalized load average) and free RAM. New work only starts while
    both are within your thresholds; work already in flight always
    finishes.
-3. **Scheduling** — each work unit is one file mutation. Worker slots
-   claim a package's sandbox exclusively, restore the target file
-   pristine, run the command chain, classify the outcome, then observe a
-   cooldown before taking more work. Ramp-up is gradual (or calculated),
-   and sustained memory pressure scales worker capacity down — with
-   recovery once resources free up. A timed-out command is asked to
-   terminate first (SIGTERM) and hard-killed after the configurable
+3. **Scheduling** — each work unit is one file mutation. Packages run
+   strictly one at a time by default (`scheduling.concurrent_packages`,
+   `1`; raise it or set `0` for no limit). Worker slots claim a package's
+   sandbox exclusively, restore the target file pristine, run the
+   command chain, classify the outcome, then observe a cooldown before
+   taking more work. Ramp-up is gradual (or calculated), and sustained
+   memory pressure scales worker capacity down — with recovery once
+   resources free up. A timed-out command is asked to terminate first
+   (SIGTERM) and hard-killed after the configurable
    `mutation.timeout.kill_grace` (10s default) — a cooperative engine
    can use that window to restore the file it was mutating.
 4. **Sandbox cache** — the first slot to reach a package bootstraps it

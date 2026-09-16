@@ -63,6 +63,9 @@ func TestLoadMinimal(t *testing.T) {
 	if c.Scheduling.Order != "discovery" || c.Scheduling.RampUp != "gradual" {
 		t.Errorf("scheduling defaults = %q/%q", c.Scheduling.Order, c.Scheduling.RampUp)
 	}
+	if c.ConcurrentPackages() != 1 {
+		t.Errorf("concurrent_packages default = %d, want 1 (sequential)", c.ConcurrentPackages())
+	}
 	if c.Reports.Storage != "json" || c.Reports.Dir != "reports" {
 		t.Errorf("reports defaults = %q/%q", c.Reports.Storage, c.Reports.Dir)
 	}
@@ -97,6 +100,7 @@ func TestValidateErrors(t *testing.T) {
 		{"all without all_tests", minimalConfig + "\n  tests_fallback: all\n", "all_tests"},
 		{"bad cpu metric", minimalConfig + "\nresources:\n  cpu_metric: vibes\n", "cpu_metric"},
 		{"bad kill grace", minimalConfig + "\n  timeout:\n    kill_grace: soon\n", "kill_grace"},
+		{"negative package concurrency", minimalConfig + "\nscheduling:\n  concurrent_packages: -1\n", "concurrent_packages"},
 		{"bad ordering", minimalConfig + "\nscheduling:\n  order: random\n", "order"},
 		{"bad storage", minimalConfig + "\nreports:\n  storage: csv\n", "storage"},
 		{"bad exit key", minimalConfig + "\nresults:\n  by_exit_code:\n    x: killed\n", "by_exit_code"},
