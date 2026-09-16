@@ -246,8 +246,10 @@ func TestRenderBar(t *testing.T) {
 
 func TestLogFileEvent(t *testing.T) {
 	var buf bytes.Buffer
+	// Events render in their own location; construct UTC times so the
+	// expectation is not timezone-dependent.
 	logFileEvent(&buf)(scheduler.FileEvent{
-		Time: time.Unix(0, 0), Package: "libs/pa", File: "lib/a.dart", Done: 1, Total: 2,
+		Time: time.Unix(0, 0).UTC(), Package: "libs/pa", File: "lib/a.dart", Done: 1, Total: 2,
 	})
 	want := "\r\033[K[1970-01-01T00:00:00Z] started 1/2 libs/pa - lib/a.dart\n"
 	if got := buf.String(); got != want {
@@ -255,7 +257,7 @@ func TestLogFileEvent(t *testing.T) {
 	}
 	buf.Reset()
 	logFileEvent(&buf)(scheduler.FileEvent{
-		Time: time.Unix(0, 0), Package: "libs/pa", File: "lib/a.dart", Done: 2, Total: 2, Finished: true,
+		Time: time.Unix(0, 0).UTC(), Package: "libs/pa", File: "lib/a.dart", Done: 2, Total: 2, Finished: true,
 	})
 	want = "\r\033[K[1970-01-01T00:00:00Z] finished 2/2 libs/pa - lib/a.dart\n"
 	if got := buf.String(); got != want {

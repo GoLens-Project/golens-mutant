@@ -5,6 +5,7 @@
 package discover
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -167,6 +168,58 @@ func MarkExempt(pkgs []*Package, patterns []string) []string {
 		}
 	}
 	return unmatched
+}
+
+// Select narrows the queue to the package and/or file given on the
+// command line (--package/--file). Patterns use the same glob syntax as
+// exemptions; an empty selector keeps everything. A --file pattern is
+// matched against "package/file" — e.g. 'libs/core/lib/api/client.dart' —
+// so it can address one file exactly or glob a subtree. Packages left
+// with no files by the file selector are dropped.
+func Select(pkgs []*Package, pkgSel, fileSel string) ([]*Package, error) {
+	if pkgSel != "" {
+		var kept []*Package
+		for _, p := range pkgs {
+			if config.MatchGlob(pkgSel, p.Name) {
+				kept = append(kept, p)
+			}
+		}
+		if len(kept) == 0 {
+			return nil, fmt.Errorf("--package %q matched no discovered package (have: %s)",
+				pkgSel, strings.Join(names(pkgs), ", "))
+		}
+		pkgs = kept
+	}
+	if fileSel != "" {
+		var kept []*Package
+		for _, p := range pkgs {
+			var files []File
+			for _, f := range p.Files {
+				if config.MatchGlob(fileSel, p.Name+"/"+f.Rel) {
+					files = append(files, f)
+				}
+			}
+			if len(files) > 0 {
+				cp := *p
+				cp.Files = files
+				kept = append(kept, &cp)
+			}
+		}
+		if len(kept) == 0 {
+			return nil, fmt.Errorf("--file %q matched no discovered file (in: %s)",
+				fileSel, strings.Join(names(pkgs), ", "))
+		}
+		pkgs = kept
+	}
+	return pkgs, nil
+}
+
+func names(pkgs []*Package) []string {
+	out := make([]string, len(pkgs))
+	for i, p := range pkgs {
+		out[i] = p.Name
+	}
+	return out
 }
 
 // innermostPackage finds the nearest ancestor directory of dir (inclusive)
