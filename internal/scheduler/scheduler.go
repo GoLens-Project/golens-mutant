@@ -100,6 +100,12 @@ type pkgState struct {
 	pending []discover.File
 	aborted bool
 
+	// active marks a package with an unfinished claim: a file was popped
+	// and the package still has work or an in-flight step. It is the
+	// in-flight unit of the package-concurrency gate (set while claimed,
+	// cleared in fileFinished when nothing is left to run).
+	active bool
+
 	// total/done drive the per-package x/y of FileEvent log lines. A
 	// package's sandbox is exclusive, so its files resolve one at a time
 	// and done counts up in queue order.
@@ -318,6 +324,11 @@ func (s *Scheduler) fileFinished(st *pkgState, file string) {
 	s.mu.Lock()
 	st.done++
 	x, y := st.done, st.total
+	// Nothing left to run: the package leaves the concurrency gate, so
+	// the next package may start.
+	if st.active && (st.aborted || len(st.pending) == 0) {
+		st.active = false
+	}
 	s.mu.Unlock()
 	if s.opt.FileLog == nil {
 		return
@@ -424,6 +435,18 @@ func (s *Scheduler) nextWork(ctx context.Context) (*pkgState, *workspace.Sandbox
 			s.mu.Unlock()
 			continue
 		}
+		// Package-concurrency gate: an already-active package stays
+		// eligible; a NEW package may start only while under the
+		// configured limit (0 = no limit; 1, the default, runs packages
+		// strictly one at a time). The slot is reserved BEFORE
+		// contending for the sandbox — otherwise a second worker could
+		// slip past the gate in the gap between the first worker's
+		// successful acquire and its claim being recorded.
+		if limit := s.cfg.ConcurrentPackages(); limit > 0 && !st.active && s.activePackagesLocked() >= limit {
+			s.mu.Unlock()
+			continue
+		}
+		st.active = true
 		file := st.pending[0]
 		s.mu.Unlock()
 
@@ -471,6 +494,17 @@ func (s *Scheduler) nextWork(ctx context.Context) (*pkgState, *workspace.Sandbox
 		return st, sbx, file, true
 	}
 	return nil, nil, discover.File{}, false
+}
+
+// activePackagesLocked counts packages with an unfinished claim.
+func (s *Scheduler) activePackagesLocked() int {
+	n := 0
+	for _, st := range s.states {
+		if st.active {
+			n++
+		}
+	}
+	return n
 }
 
 // runFile restores the file pristine, runs the command chain, classifies
@@ -537,6 +571,7 @@ func (s *Scheduler) runFile(ctx context.Context, st *pkgState, sbx *workspace.Sa
 	if timedOut && s.cfg.Mutation.Timeout.OnTimeout == "abort_package" {
 		s.mu.Lock()
 		st.aborted = true
+		st.active = false // aborted: leaves the concurrency gate now
 		dropped := len(st.pending)
 		st.pending = nil
 		s.mu.Unlock()

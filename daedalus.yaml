@@ -1,0 +1,18 @@
+agent: claude
+
+branch_prefix: patch
+
+tests_timeout: 30m
+agent_run_timeout: 45m
+
+temporal:
+  host: 127.0.0.1:7233
+  ui_port: 8233
+  task_queue: golens-mutant
+
+anthropic:
+  url: https://api.z.ai/api/anthropic
+  key: "5f00e2cf83a04ff09f065d5965342881.GeKCj1bqmWRPjxN4" #zaifak
+#  key: "017d26837fe44e63bc970754aa017129.L18zOqg39qAdOrzr" #andela
+  model: "glm-5.2"
+  timeout_ms: 3000000

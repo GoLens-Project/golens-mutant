@@ -94,6 +94,14 @@ printed:
 
 	fmt.Fprintf(&b, "\n  settings:\n")
 	fmt.Fprintf(&b, "    max workers: %d (%s ramp-up)\n", cfg.MaxWorkers(), cfg.Scheduling.RampUp)
+	switch n := cfg.ConcurrentPackages(); {
+	case n == 1:
+		fmt.Fprintf(&b, "    packages: sequential (one at a time)\n")
+	case n > 1:
+		fmt.Fprintf(&b, "    packages: up to %d concurrent\n", n)
+	default:
+		fmt.Fprintf(&b, "    packages: unlimited concurrency\n")
+	}
 	fmt.Fprintf(&b, "    cooldown: %s, scale_down_after: %s\n",
 		cfg.Resources.SpawnCooldown, cfg.Resources.ScaleDownAfter)
 	fmt.Fprintf(&b, "    timeout: %s per command (%s)\n",

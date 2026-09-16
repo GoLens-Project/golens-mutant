@@ -102,6 +102,13 @@ scheduling:
   # (warm cache before parallelism).
   workers_after_cache: false
 
+  # How many packages may be in flight at once. 1 (the default) runs
+  # packages strictly sequentially: every file of a package completes
+  # before the next package starts. 0 lifts the limit; N runs up to N
+  # packages concurrently (a package's own files always run one at a
+  # time — its sandbox is exclusive).
+  concurrent_packages: 1
+
 workspace:
   # Root for sandboxes and the prepared-package cache.
   base_dir: .work

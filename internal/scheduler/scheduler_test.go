@@ -402,6 +402,73 @@ func TestTimeoutDoesNotPoisonLaterSteps(t *testing.T) {
 	}
 }
 
+// TestPackagesRunSequentially guards the package-concurrency default:
+// with concurrent_packages unset (1), every file of one package finishes
+// before the next package starts.
+func TestPackagesRunSequentially(t *testing.T) {
+	h := buildFixture(t, []string{"pa", "pb"}, 2, "")
+	h.cfg.Resources.MaxWorkers = 2
+	// Slow files give a second worker ample time to start pb early if
+	// the gate were broken. Ordering is asserted from the commands' own
+	// append order, not FileLog events: the gate slot opens only after
+	// pa's last command completed, so pb appending first proves the gate
+	// broken, while FileLog emission happens outside the scheduler lock
+	// and its order is not guaranteed.
+	orderFile := filepath.Join(t.TempDir(), "order.txt")
+	h.cfg.Mutation.Commands = []string{
+		fmt.Sprintf("echo {package} >> %s; sleep 0.3; true", orderFile),
+	}
+	h.run(t, Options{})
+	b, err := os.ReadFile(orderFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Fields(string(b))
+	if len(lines) != 4 {
+		t.Fatalf("order = %v, want 4 entries", lines)
+	}
+	pa, pb := h.pkg("pa"), h.pkg("pb")
+	for i, l := range lines {
+		want := pa
+		if i >= 2 {
+			want = pb
+		}
+		if l != want {
+			t.Fatalf("packages not sequential: %v", lines)
+		}
+	}
+}
+
+// TestConcurrentPackagesUnlimited covers the lifted gate: with
+// concurrent_packages 0, a second package starts while the first is
+// still running.
+func TestConcurrentPackagesUnlimited(t *testing.T) {
+	h := buildFixture(t, []string{"pa", "pb"}, 2, "")
+	h.cfg.Resources.MaxWorkers = 2
+	h.cfg.Mutation.Commands = []string{"sleep 0.3; true"}
+	n := 0
+	h.cfg.Scheduling.ConcurrentPackages = &n
+	var mu sync.Mutex
+	var events []FileEvent
+	h.run(t, Options{FileLog: func(e FileEvent) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	}})
+	paFinishedAny, pbStartedEarly := false, false
+	for _, e := range events {
+		if e.Package == h.pkg("pa") && e.Finished {
+			paFinishedAny = true
+		}
+		if e.Package == h.pkg("pb") && !e.Finished && !paFinishedAny {
+			pbStartedEarly = true
+		}
+	}
+	if !pbStartedEarly {
+		t.Error("pb never started while pa was still running — gate not lifted")
+	}
+}
+
 func TestSandboxExclusivitySerializesPackage(t *testing.T) {
 	// The command logs start/end; concurrent sandbox use would produce
 	// two adjacent "start" lines.

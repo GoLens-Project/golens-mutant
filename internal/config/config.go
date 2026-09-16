@@ -158,6 +158,12 @@ type SchedulingConfig struct {
 	// WorkersAfterCache: when true, no new workers spawn until every
 	// package's sandbox has been bootstrapped once (D16).
 	WorkersAfterCache bool `yaml:"workers_after_cache"`
+
+	// ConcurrentPackages caps how many packages may be in flight at
+	// once. Nil (unset) means 1: packages run strictly sequentially —
+	// every file of a package completes before the next package starts.
+	// 0 lifts the limit entirely.
+	ConcurrentPackages *int `yaml:"concurrent_packages"`
 }
 
 // WorkspaceConfig defines the sandbox engine settings (D16).
@@ -402,6 +408,9 @@ func (c *Config) Validate() error {
 	default:
 		add(`scheduling.ramp_up: must be "gradual" or "calculated" (got %q)`, c.Scheduling.RampUp)
 	}
+	if p := c.Scheduling.ConcurrentPackages; p != nil && *p < 0 {
+		add(`scheduling.concurrent_packages: must be >= 0 (0 = no limit)`)
+	}
 	if s := c.Reports.Storage; s != "json" && s != "sqlite" {
 		add(`reports.storage: must be "json" or "sqlite" (got %q)`, s)
 	}
@@ -483,6 +492,15 @@ func (c *Config) MaxWorkers() int {
 
 // ScaleDownEnabled reports whether dynamic scale-down is on (D7).
 func (c *Config) ScaleDownEnabled() bool { return *c.Resources.ScaleDown }
+
+// ConcurrentPackages returns the package-concurrency limit. The default
+// (unset) is 1 — packages run strictly one at a time; 0 means no limit.
+func (c *Config) ConcurrentPackages() int {
+	if p := c.Scheduling.ConcurrentPackages; p != nil {
+		return *p
+	}
+	return 1
+}
 
 // ResumeEnabled reports whether resume state is persisted (D8).
 func (c *Config) ResumeEnabled() bool { return *c.Resume.Enabled }
