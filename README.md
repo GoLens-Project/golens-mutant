@@ -198,6 +198,23 @@ listed as `[exempt]` with their files marked `skipped (exempt)`, so you
 can confirm a pattern matched what you intended. A pattern that matches
 no package prints a warning — usually a typo.
 
+## Selecting a package or file
+
+`--package` and `--file` narrow a run without touching the config — for
+one quick package or a single stubborn file:
+
+```sh
+mutant --config config.yaml --package libs/core
+mutant --config config.yaml --file 'libs/core/lib/api/client.dart'
+```
+
+Both use the same glob syntax as `--exempt`, matched against package
+names and `package/file` paths respectively (for `--file`, join the
+package name from the log line or `--dry-run` heading with the
+package-relative file path shown beneath it). Combine them to pin a file inside a
+package; a selector that matches nothing is an error, and `--dry-run`
+shows exactly what a selection would run.
+
 ## Development
 
 ```sh

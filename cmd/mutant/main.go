@@ -36,6 +36,8 @@ func run() error {
 	configPath := fs.String("config", "config.yaml", "path to the YAML configuration file")
 	genExample := fs.String("generate-config-example", "", "write a fully documented config example to this path and exit")
 	dryRun := fs.Bool("dry-run", false, "print the session plan (packages, test mappings, commands) without running anything")
+	onlyPackage := fs.String("package", "", "run only packages whose name matches this glob, e.g. --package libs/core")
+	onlyFile := fs.String("file", "", "run only files matching this package/file glob, e.g. --file 'libs/core/lib/api/client.dart'")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	var exemptPatterns []string
 	fs.Func("exempt", "glob pattern of package name(s) to skip entirely, e.g. --exempt 'libs/generated/**' (repeatable)",
@@ -76,6 +78,13 @@ func run() error {
 	if unmatched := discover.MarkExempt(pkgs, exemptPatterns); len(unmatched) > 0 {
 		fmt.Fprintf(os.Stderr, "mutant: warning: --exempt pattern(s) matched no packages: %s\n",
 			strings.Join(unmatched, ", "))
+	}
+
+	// --package/--file narrow the session before anything else: the dry
+	// run shows the selection, and unselected work never runs.
+	pkgs, err = discover.Select(pkgs, *onlyPackage, *onlyFile)
+	if err != nil {
+		return err
 	}
 
 	mon := monitor.New(cfg)
