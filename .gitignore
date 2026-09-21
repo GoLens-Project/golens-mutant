@@ -1,0 +1,19 @@
+# orchestrator working state
+.work/
+reports/
+backlog/
+dist/
+coverage.txt
+
+.ai-jail
+.daedalus/
+
+# local Go caches (sandboxed-shell build workaround)
+.gocache/
+.gopath/
+.gomodcache/
+
+# local artifacts (root-anchored: must not match cmd/mutant/)
+/mutant
+/mutant.exe
+*.log

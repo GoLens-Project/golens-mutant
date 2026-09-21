@@ -1,0 +1,161 @@
+# golens-mutant — mutation test orchestrator configuration
+#
+# Every command the orchestrator executes comes from this file; the CLI is
+# agnostic to the underlying mutation engine. Macros available in command
+# templates:
+#   {file}       package-relative path of the file being mutated
+#   {abs_file}   absolute path of the file inside the sandbox
+#   {tests}      test selectors resolved from mutation.tests
+#   {target_dir} absolute path of the package's sandbox directory
+#   {package}    package name (target-root-relative directory)
+
+mutation:
+  # Directories scanned for packages. A package is any directory (at any
+  # depth) containing the package marker file.
+  target_roots:
+    - libs
+    - packages
+
+  # File whose presence defines a package boundary.
+  package_marker: pubspec.yaml
+
+  # Globs (package-relative) selecting files to mutate.
+  file_patterns:
+    - "lib/**/*.dart"
+
+  # Globs rejecting files that matched file_patterns.
+  file_exclude_patterns:
+    - "lib/**/*.g.dart"
+    - "lib/**/generated/**"
+
+  # Explicit file → tests mapping (ordered; first match wins).
+  tests:
+    - pattern: "lib/src/core/**"
+      tests: ["test/core_test.dart"]
+    - pattern: "lib/src/**/network*.dart"
+      tests: ["test/network_test.dart", "test/integration_test.dart"]
+
+  # What happens for files with no tests mapping:
+  #   skip (default) — the file is not mutated
+  #   all            — {tests} expands to all_tests
+  tests_fallback: skip
+  all_tests: "test"
+
+  # Commands run sequentially per mutated file. The whole chain's combined
+  # output and exit code classify the result (see results:).
+  commands:
+    - "mutation_test -- {abs_file} && flutter test --coverage {tests}"
+
+  timeout:
+    # Per-command timeout ("0" disables).
+    duration: 5m
+    # On timeout: continue (record "timeout", keep going) or abort_package
+    # (drop the package's remaining files; resumable).
+    on_timeout: continue
+    # Grace period between SIGTERM and SIGKILL for a timed-out command
+    # ("0" escalates immediately): a cooperative engine can use it to
+    # restore the file it was mutating. Either way the sandbox is
+    # re-synced before reuse, so no mutant leaks into later steps.
+    kill_grace: 10s
+
+resources:
+  # Gate for spawning new workers: at least this much free physical RAM
+  # (MB) must be available. Active workers always finish their current
+  # file; only new spawns pause (D4).
+  min_free_ram_mb: 2048
+
+  # CPU ceiling for the gate (percent, 0-100).
+  max_cpu_percent: 90
+
+  # CPU gauge: instant (momentary usage %, default) or load_avg
+  # (1-minute load average normalized by core count, as percent).
+  cpu_metric: instant
+
+  # Maximum concurrent worker slots. 0 = one per CPU core.
+  max_workers: 0
+
+  # Per-process memory budget (MB). A worker exceeding it is killed and
+  # its file recorded as "oom". 0 disables.
+  memory_budget_per_step_mb: 0
+
+  # Pause after a file completes before re-checking resources.
+  spawn_cooldown: 2s
+
+  # Scale worker capacity down under sustained memory pressure (D7).
+  scale_down: true
+
+scheduling:
+  # Package queue order: discovery (walk order, default) or largest_first
+  # (most files first, reduces tail time).
+  order: discovery
+
+  # Worker ramp-up: gradual (default — one new worker per completion
+  # cycle, gated by resources) or calculated (start all workers up front).
+  ramp_up: gradual
+
+  # Only spawn new workers after every package's sandbox is bootstrapped
+  # (warm cache before parallelism).
+  workers_after_cache: false
+
+  # How many packages may be in flight at once. 1 (the default) runs
+  # packages strictly sequentially: every file of a package completes
+  # before the next package starts. 0 lifts the limit; N runs up to N
+  # packages concurrently (a package's own files always run one at a
+  # time — its sandbox is exclusive).
+  concurrent_packages: 1
+
+workspace:
+  # Root for sandboxes and the prepared-package cache.
+  base_dir: .work
+  cache_dir: cache
+
+  # Dependency setup command, run once per package (templates may use
+  # {target_dir}).
+  bootstrap: "flutter pub get"
+
+  # Patterns skipped when syncing sources into sandboxes (matched against
+  # package-relative path segments).
+  sync_exclude_patterns:
+    - .git
+    - .work
+    - build
+    - .dart_tool
+    - .idea
+
+reports:
+  # Output directory for per-package JSON reports, the summary, raw logs,
+  # and resume state.
+  dir: reports
+
+  # Storage backend: json (default) or sqlite.
+  storage: json
+
+  # SQLite database path when storage: sqlite (default
+  # ~/.config/golens-mutant/mutant.db).
+  # sqlite_path: /tmp/mutant.db
+
+  # Stream every command's combined stdout/stderr live to the terminal
+  # while tests run, prefixed per file, in addition to the buffered
+  # per-file logs under <dir>/logs. Output may lag for commands that
+  # buffer their own stdout when it is not a terminal.
+  show_logs: false
+
+# Result classification: how raw command outcomes map to mutation result
+# classes (killed / survived / build_error / timeout / oom / error).
+# Output rules run first; then exit codes; unlisted codes default to
+# 0 → survived, anything else → killed.
+results:
+  by_exit_code:
+    "0": survived
+    "1": killed
+    "2-5": build_error
+  rules:
+    - pattern: "mutant survived"
+      result: survived
+    - pattern: "compilation error"
+      result: build_error
+
+# Resume: persist per-file results after each completed file so an
+# interrupted run picks up where it stopped (D8).
+resume:
+  enabled: true
